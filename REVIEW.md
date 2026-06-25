@@ -1,7 +1,12 @@
-# Review
+Changed files since the last commit:
 
-Files changed since the last commit:
+- REVIEW.md
+- independent-reviewer/hooks/hooks.json
 
-- Added: `planning/MARKET_INTERFACE.md`
-- Added: `planning/MARKET_SIMULATOR.md`
-- Added: `planning/MASSIVE_API.md`
+Added files since the last commit:
+
+- None
+
+Deleted files since the last commit:
+
+- None

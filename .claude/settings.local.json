@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:polygon.io)",
+      "WebFetch(domain:massive.com)",
+      "WebSearch"
+    ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": true
+  }
+}

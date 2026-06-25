@@ -3,12 +3,15 @@
     "allow": [
       "WebFetch(domain:polygon.io)",
       "WebFetch(domain:massive.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(uv run *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   },
   "sandbox": {
-    "enabled": false,
-    "autoAllowBashIfSandboxed": false,
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
     "allowUnsandboxedCommands": true
   }
 }

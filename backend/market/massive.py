@@ -12,9 +12,12 @@ class MassiveSource(MarketDataSource):
 
     def __init__(self, cache, get_tickers) -> None:
         super().__init__(cache, get_tickers)
+        api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("MASSIVE_API_KEY is not set; cannot create MassiveSource")
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
-            headers={"Authorization": f"Bearer {os.environ['MASSIVE_API_KEY']}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=10.0,
         )
 

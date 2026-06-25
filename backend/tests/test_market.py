@@ -166,6 +166,19 @@ class TestGbmEngine:
             assert "ZZZZ" in prices
             assert prices["ZZZZ"] > 0
 
+    def test_unknown_ticker_start_price_is_deterministic(self):
+        """Ad-hoc tickers must start at the same price across processes/instances."""
+        engine_a = GbmEngine(seed=3)
+        engine_b = GbmEngine(seed=3)
+        assert engine_a._ensure("ZZZZ").price == engine_b._ensure("ZZZZ").price
+
+    def test_unknown_ticker_reproducible_with_same_seed(self):
+        engine_a = GbmEngine(seed=11)
+        engine_b = GbmEngine(seed=11)
+        tickers = {"WXYZ"}
+        for _ in range(50):
+            assert engine_a.step(tickers) == engine_b.step(tickers)
+
     def test_unknown_ticker_uses_default_spec_sector(self):
         engine = GbmEngine(seed=5)
         engine._ensure("FAKE")
@@ -193,17 +206,18 @@ class TestGbmEngine:
             spec=TickerSpec(price=start_price, mu=mu, sigma=0.0, sector="other"),
         )
         prices = engine.step({"TEST"})
-        expected = start_price * math.exp(mu * DT * SPEED)
-        assert abs(prices["TEST"] - expected) < 1e-6
+        # step() rounds to cents, so compare against the rounded drift expectation.
+        expected = round(start_price * math.exp(mu * DT * SPEED), 2)
+        assert prices["TEST"] == expected
 
     def test_state_persists_between_steps(self):
         """Price at step N is the base for step N+1, not the seed price."""
         engine = GbmEngine(seed=42)
         p1 = engine.step({"AAPL"})["AAPL"]
+        assert engine._state["AAPL"].price == p1  # state reflects step 1
         p2 = engine.step({"AAPL"})["AAPL"]
-        # The engine state should have updated after step 1
+        # The engine state should have advanced to the step-2 price.
         assert engine._state["AAPL"].price == p2
-        assert engine._state["AAPL"].price != p1 or True  # prices may coincide, just ensuring no crash
 
     def test_prices_are_rounded_to_two_decimal_places(self):
         engine = GbmEngine(seed=42)

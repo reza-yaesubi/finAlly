@@ -1,3 +1,4 @@
+import hashlib
 import math
 import random
 from dataclasses import dataclass
@@ -27,7 +28,9 @@ class GbmEngine:
         if ticker not in self._state:
             spec = SEED_UNIVERSE.get(ticker)
             if spec is None:
-                start = 50 + (hash(ticker) % 450)
+                # Deterministic across processes (built-in hash() is salted per run).
+                digest = int(hashlib.sha256(ticker.encode()).hexdigest(), 16)
+                start = 50 + (digest % 450)
                 spec = TickerSpec(float(start), DEFAULT_SPEC.mu, DEFAULT_SPEC.sigma, "other")
             self._state[ticker] = _State(price=spec.price, spec=spec)
         return self._state[ticker]

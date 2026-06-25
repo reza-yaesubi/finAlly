@@ -1,0 +1,14 @@
+{"hooks": {
+    
+    "Stop":[
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codex exec \"Review changes since last commit and write name of the files changed, added or deleted in REVIEW.md file.\" < /dev/null"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -22,11 +22,11 @@ The user runs a single Docker command (or a provided start script). A browser op
 ### What the User Can Do
 
 - **Watch prices stream** — prices flash green (uptick) or red (downtick) with subtle CSS animations that fade
-- **View sparkline mini-charts** — price action beside each ticker in the watchlist, accumulated on the frontend from the SSE stream since page load (sparklines fill in progressively)
+- **View sparkline mini-charts** — price action beside each ticker in the watchlist, accumulated on the frontend from the SSE stream since page load (sparklines fill in progressively; will be sparse when using Massive API due to 15s poll intervals — this is acceptable)
 - **Click a ticker** to see a larger detailed chart in the main chart area
 - **Buy and sell shares** — market orders only, instant fill at current price, no fees, no confirmation dialog
 - **Monitor their portfolio** — a heatmap (treemap) showing positions sized by weight and colored by P&L, plus a P&L chart tracking total portfolio value over time
-- **View a positions table** — ticker, quantity, average cost, current price, unrealized P&L, % change
+- **View a positions table** — ticker, quantity, average cost, current price, unrealized P&L, % change since average cost
 - **Chat with the AI assistant** — ask about their portfolio, get analysis, and have the AI execute trades and manage the watchlist through natural language
 - **Manage the watchlist** — add/remove tickers manually or via the AI chat
 
@@ -169,14 +169,21 @@ Both the simulator and the Massive client implement the same abstract interface.
 - A single background task (simulator or Massive poller) writes to an in-memory price cache
 - The cache holds the latest price, previous price, and timestamp for each ticker
 - SSE streams read from this cache and push updates to connected clients
+- "All tickers known to the system" means the union of the user's watchlist and any tickers they hold in positions
+- When using Massive API, a newly added ticker enters the poll on the next poll cycle
 - This architecture supports future multi-user scenarios without changes to the data layer
 
 ### SSE Streaming
 
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
-- Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
-- Each SSE event contains ticker, price, previous price, timestamp, and change direction
+- Server pushes price updates at a regular cadence (~500ms) for all tickers in watchlist + positions
+- Each SSE event is a JSON object:
+  ```json
+  {"ticker": "AAPL", "price": 192.50, "prev_price": 191.20, "timestamp": "2024-01-01T10:00:00Z", "direction": "up"}
+  ```
+  `direction` values: `"up"`, `"down"`, `"unchanged"`
+- The frontend triggers price flash animation only when `price !== prev_price` — not on every SSE tick. This prevents spurious flashes when Massive API repeats the same price across multiple SSE pushes.
 - Client handles reconnection automatically (EventSource has built-in retry)
 
 ---
@@ -207,7 +214,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `added_at` TEXT (ISO timestamp)
 - UNIQUE constraint on `(user_id, ticker)`
 
-**positions** — Current holdings (one row per ticker per user)
+**positions** — Current holdings (one row per ticker per user; quantity is set to `0` after a full sell, row is retained)
 - `id` TEXT PRIMARY KEY (UUID)
 - `user_id` TEXT (default: `"default"`)
 - `ticker` TEXT
@@ -225,7 +232,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `price` REAL
 - `executed_at` TEXT (ISO timestamp)
 
-**portfolio_snapshots** — Portfolio value over time (for P&L chart). Recorded every 30 seconds by a background task, and immediately after each trade execution.
+**portfolio_snapshots** — Portfolio value over time (for P&L chart). Recorded every 30 seconds by a background task and immediately after each trade execution. The chart starts empty until the first snapshot fires.
 - `id` TEXT PRIMARY KEY (UUID)
 - `user_id` TEXT (default: `"default"`)
 - `total_value` REAL
@@ -236,7 +243,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `user_id` TEXT (default: `"default"`)
 - `role` TEXT (`"user"` or `"assistant"`)
 - `content` TEXT
-- `actions` TEXT (JSON — trades executed, watchlist changes made; null for user messages)
+- `actions` TEXT (JSON — null for user messages; for assistant messages, shape is `{"trades": [{"ticker": "AAPL", "side": "buy", "quantity": 10, "price": 192.50, "status": "executed"}], "watchlist_changes": [{"ticker": "PYPL", "action": "add", "status": "executed"}]}`)
 - `created_at` TEXT (ISO timestamp)
 
 ### Default Seed Data
@@ -251,7 +258,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 ### Market Data
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/stream/prices` | SSE stream of live price updates |
+| GET | `/api/stream/prices` | SSE stream of live price updates (see Section 6 for event shape) |
 
 ### Portfolio
 | Method | Path | Description |
@@ -260,17 +267,69 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 | POST | `/api/portfolio/trade` | Execute a trade: `{ticker, quantity, side}` |
 | GET | `/api/portfolio/history` | Portfolio value snapshots over time (for P&L chart) |
 
+**`GET /api/portfolio` response:**
+```json
+{
+  "cash": 7500.00,
+  "total_value": 10250.00,
+  "positions": [
+    {"ticker": "AAPL", "quantity": 10, "avg_cost": 190.00, "current_price": 192.50, "unrealized_pnl": 25.00, "pnl_pct": 1.32}
+  ]
+}
+```
+
+**`POST /api/portfolio/trade` request:** `{"ticker": "AAPL", "quantity": 10, "side": "buy"}`
+
+**`POST /api/portfolio/trade` response (success):**
+```json
+{"ok": true, "ticker": "AAPL", "side": "buy", "quantity": 10, "price": 192.50, "cash_remaining": 7575.00}
+```
+
+**`POST /api/portfolio/trade` response (failure):** HTTP 400 with `{"ok": false, "error": "Insufficient cash"}` or `{"ok": false, "error": "Insufficient shares"}`
+
+**Trade validation rules:**
+- Buy: `quantity * current_price <= cash_balance`
+- Sell: `quantity <= position.quantity` (position must exist)
+- `quantity` must be positive
+
+**`GET /api/portfolio/history` response:**
+```json
+[{"recorded_at": "2024-01-01T10:00:00Z", "total_value": 10000.00}]
+```
+
 ### Watchlist
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/watchlist` | Current watchlist tickers with latest prices |
+| GET | `/api/watchlist` | Current watchlist tickers (prices come from SSE) |
 | POST | `/api/watchlist` | Add a ticker: `{ticker}` |
 | DELETE | `/api/watchlist/{ticker}` | Remove a ticker |
+
+**`GET /api/watchlist` response:**
+```json
+[{"ticker": "AAPL"}, {"ticker": "GOOGL"}]
+```
+The frontend merges this list with live prices from the SSE stream. No price cache dependency on this endpoint.
+
+**`POST /api/watchlist` response (success):** HTTP 201 with `{"ticker": "AAPL"}`
+
+**`POST /api/watchlist` response (duplicate):** HTTP 409 with `{"error": "Ticker already in watchlist"}`
 
 ### Chat
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/chat` | Send a message, receive complete JSON response (message + executed actions) |
+
+**`POST /api/chat` request:** `{"message": "Buy 5 shares of AAPL"}`
+
+**`POST /api/chat` response:**
+```json
+{
+  "message": "Done — bought 5 shares of AAPL at $192.50.",
+  "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 5, "price": 192.50, "status": "executed"}],
+  "watchlist_changes": []
+}
+```
+If a trade fails validation, `"status"` is `"failed"` and a `"error"` field describes why. If the LLM returns malformed or unparseable JSON, the backend returns HTTP 200 with `{"message": "Sorry, I encountered an error processing your request.", "trades": [], "watchlist_changes": []}` and logs the raw LLM output.
 
 ### System
 | Method | Path | Description |
@@ -290,7 +349,7 @@ There is an OPENROUTER_API_KEY in the .env file in the project root.
 When the user sends a chat message, the backend:
 
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
-2. Loads recent conversation history from the `chat_messages` table
+2. Loads the last 20 messages from the `chat_messages` table as conversation history
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
 4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
 5. Parses the complete structured JSON response
@@ -316,7 +375,7 @@ The LLM is instructed to respond with JSON matching this schema:
 
 - `message` (required): The conversational text shown to the user
 - `trades` (optional): Array of trades to auto-execute. Each trade goes through the same validation as manual trades (sufficient cash for buys, sufficient shares for sells)
-- `watchlist_changes` (optional): Array of watchlist modifications
+- `watchlist_changes` (optional): Array of watchlist additions. `action` value: `"add"` only — the LLM can add tickers but not remove them via structured output
 
 ### Auto-Execution
 
@@ -339,7 +398,17 @@ The LLM should be prompted as "FinAlly, an AI trading assistant" with instructio
 
 ### LLM Mock Mode
 
-When `LLM_MOCK=true`, the backend returns deterministic mock responses instead of calling OpenRouter. This enables:
+When `LLM_MOCK=true`, the backend returns the following deterministic mock response instead of calling OpenRouter:
+
+```json
+{
+  "message": "Your portfolio is looking healthy. You have $10,000 in cash and no open positions.",
+  "trades": [],
+  "watchlist_changes": []
+}
+```
+
+This enables:
 - Fast, free, reproducible E2E tests
 - Development without an API key
 - CI/CD pipelines
@@ -352,8 +421,8 @@ When `LLM_MOCK=true`, the backend returns deterministic mock responses instead o
 
 The frontend is a single-page application with a dense, terminal-inspired layout. The specific component architecture and layout system is up to the Frontend Engineer, but the UI should include these elements:
 
-- **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), daily change %, and a sparkline mini-chart (accumulated from SSE since page load)
-- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here.
+- **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), % change since first price seen this session, and a sparkline mini-chart (accumulated from SSE since page load)
+- **Main chart area** — larger chart for the currently selected ticker, showing price over time since page load (starts empty, fills in from SSE data). Clicking a ticker in the watchlist selects it here.
 - **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss)
 - **P&L chart** — line chart showing total portfolio value over time, using data from `portfolio_snapshots`
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
